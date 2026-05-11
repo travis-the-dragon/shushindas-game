@@ -4,4 +4,5 @@ bin
 lib
 share
 __pycache__
+chroma_db
 pyvenv.cfg

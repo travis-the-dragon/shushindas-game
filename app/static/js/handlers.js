@@ -1,3 +1,43 @@
+// Tracks an image the user has pasted into the chat input
+let pastedImageData = null;  // full base64 data URL
+let pastedImageMimeType = null;
+
+function showImagePreview(dataUrl) {
+    const preview = document.getElementById('imagePreview');
+    const img = document.getElementById('previewImg');
+    img.src = dataUrl;
+    preview.style.display = 'block';
+}
+
+function clearImagePreview() {
+    pastedImageData = null;
+    pastedImageMimeType = null;
+    const preview = document.getElementById('imagePreview');
+    const img = document.getElementById('previewImg');
+    img.src = '';
+    preview.style.display = 'none';
+}
+
+// Capture image paste events anywhere on the page
+document.addEventListener('paste', function (event) {
+    const items = event.clipboardData && event.clipboardData.items;
+    if (!items) return;
+    for (let i = 0; i < items.length; i++) {
+        if (items[i].type.startsWith('image/')) {
+            event.preventDefault();
+            const blob = items[i].getAsFile();
+            pastedImageMimeType = items[i].type;
+            const reader = new FileReader();
+            reader.onload = function (e) {
+                pastedImageData = e.target.result;
+                showImagePreview(e.target.result);
+            };
+            reader.readAsDataURL(blob);
+            break;
+        }
+    }
+});
+
 function updateQuickQuestions(sample_questions) {
     // Update the input values
     document.getElementById('quickQ1Input').value = sample_questions.question1;
@@ -39,9 +79,12 @@ function renderHistory(history) {
             `;
         } else {
             div.classList.add('justify-content-start');
+            const imageTag = item.has_image
+                ? `<div style="font-size:0.8em; margin-top:4px; opacity:0.75;">&#128247; Image attached</div>`
+                : '';
             div.innerHTML = `
                 <div class="msg-bubble msg-sent">
-                    ${item.text}
+                    ${item.text}${imageTag}
                 </div>
             `;
         }
@@ -99,6 +142,10 @@ document.addEventListener('DOMContentLoaded', function () {
     const dropdownButton = document.querySelector('#modelDropdown .dropdown-toggle');
 
     dropdownButton.setAttribute('data-selected-value', defaultModel);
+
+    document.getElementById('clearImageBtn').addEventListener('click', function () {
+        clearImagePreview();
+    });
 
     dropdownItems.forEach(item => {
         item.addEventListener('click', function (event) {
@@ -183,13 +230,19 @@ document.addEventListener('DOMContentLoaded', function () {
             const model = getSelectedModel();
             console.log("model: ", model);
 
+            // Capture and clear the pasted image before sending
+            const imageDataToSend = pastedImageData;
+            if (imageDataToSend) {
+                clearImagePreview();
+            }
+
             // Send the data using fetch
             fetch('/ask', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
                 },
-                body: JSON.stringify({ question: question, model: model, q_num: qNum }) // Send the question
+                body: JSON.stringify({ question: question, model: model, q_num: qNum, image_data: imageDataToSend })
             })
                 .then(response => response.json())
                 .then(data => {

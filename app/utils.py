@@ -1,8 +1,11 @@
+import base64
+import io
 import os
 import random
 import yaml
 import numpy as np
 import PyPDF2
+from PIL import Image as PILImage
 
 from google.cloud import aiplatform
 from google.cloud import bigquery
@@ -12,7 +15,7 @@ from vertexai.language_models import TextGenerationModel, TextEmbeddingModel
 from vertexai.generative_models import GenerativeModel, Part, FinishReason, Candidate
 from openai import OpenAI
 
-from pinecone import Pinecone, ServerlessSpec
+import chromadb
 from pydantic import BaseModel, Field
 from typing import Union
 import spacy
@@ -103,11 +106,12 @@ class LanguageModel(weave.Model):
         weave.publish(self.system_prompt)
 
     @weave.op
-    def predict(self, question: str, context: str = None):
-        """Predict the response based on the input question and context.
+    def predict(self, question: str, image: PILImage.Image = None, context: str = None):
+        """Predict the response based on the input question, optional image, and context.
 
         Args:
             question (str): The input question.
+            image (PIL.Image, optional): An image pasted by the user (logged by Weave).
             context (str, optional): Additional context for the model.
 
         Returns:
@@ -122,34 +126,47 @@ class LanguageModel(weave.Model):
             context = emb_stuff.search_vector_database(question)
 
         if self.llm_fam == "gemini":
-            resp = self.ask_gemini(question, context)
+            resp = self.ask_gemini(question, context, image=image)
         elif self.llm_fam == "openai":
-            resp = self.ask_openai(question, context)
+            resp = self.ask_openai(question, context, image=image)
         return {"response": resp, "call_id": current_call.id}
 
     @weave.op
-    def ask_openai(self, question: str, data: str):
+    def ask_openai(self, question: str, data: str, image: PILImage.Image = None):
         """Request a response from the OpenAI model.
 
         Args:
             question (str): The input question.
             data (str): Additional data or context.
+            image (PIL.Image, optional): An image to include in the request.
 
         Returns:
             str: The model's response or a fallback if the response is incomplete.
         """
         client = OpenAI()
-        txt_model = client
+
+        if image is not None:
+            buf = io.BytesIO()
+            fmt = image.format or 'PNG'
+            image.save(buf, format=fmt)
+            b64 = base64.b64encode(buf.getvalue()).decode('utf-8')
+            data_url = f"data:image/{fmt.lower()};base64,{b64}"
+            user_content = [
+                {"type": "text", "text": question},
+                {"type": "image_url", "image_url": {"url": data_url}}
+            ]
+        else:
+            user_content = question
 
         messages = [
             {"role": "system", "content": self.system_prompt.prompt},
-            {"role": "user", "content": question}
+            {"role": "user", "content": user_content}
         ]
 
         if data is not None:
             messages.extend([{"role": "assistant", "content": data}])
 
-        response = txt_model.chat.completions.create(
+        response = client.chat.completions.create(
             model=self.llm_model_name,
             messages=messages
         )
@@ -160,12 +177,13 @@ class LanguageModel(weave.Model):
             return response.choices[0].message.content
 
     @weave.op
-    def ask_gemini(self, question: str, data: str):
+    def ask_gemini(self, question: str, data: str, image: PILImage.Image = None):
         """Request a response from the Gemini model.
 
         Args:
             question (str): The input question.
             data (str): Additional data or context.
+            image (PIL.Image, optional): An image to include in the request.
 
         Returns:
             str: The model's response or a fallback if the response is incomplete.
@@ -174,15 +192,22 @@ class LanguageModel(weave.Model):
         REGION = os.getenv("REGION")
         vertexai.init(project=PROJECT_ID, location=REGION)
         txt_model = GenerativeModel(self.llm_model_name)
-        
+
         PROMPT = f"""
         {self.system_prompt.prompt}
         CONTEXT: {data}
         QUESTION: {question}
         """
 
+        parts = [PROMPT]
+        if image is not None:
+            buf = io.BytesIO()
+            fmt = image.format or 'PNG'
+            image.save(buf, format=fmt)
+            parts.append(Part.from_data(data=buf.getvalue(), mime_type=f"image/{fmt.lower()}"))
+
         response = txt_model.generate_content(
-            [PROMPT],
+            parts,
             stream=False,
         )
 
@@ -193,12 +218,12 @@ class LanguageModel(weave.Model):
 class EmbeddingsDB:
     """Class to manage embedding models and vector databases for text processing."""
 
-    def __init__(self, emb_model_fam="openai", vector_db="pinecone"):
+    def __init__(self, emb_model_fam="openai", vector_db="chroma"):
         """Initialize the EmbeddingsDB with model family and vector database configurations.
 
         Args:
             emb_model_fam (str): The embedding model family to use ("openai" or "gecko").
-            vector_db (str): The vector database to use ("pinecone" or "bigquery").
+            vector_db (str): The vector database to use ("chroma" or "bigquery").
         """
         self.emb_model = None
         self.model_fam = emb_model_fam
@@ -215,25 +240,13 @@ class EmbeddingsDB:
             self.emb_model = client.embeddings
             self.dimensions = 1536
 
-        if vector_db == "pinecone":
-            self.vector_db = "pinecone"
-            pc = Pinecone(api_key=os.getenv("PINECONE_KEY"))
-            self.pc = pc
-            self.pc_index_name = "shushinda-index"
-            self.namespace = "the_library"
-
-            if self.pc_index_name not in pc.list_indexes().names():
-                pc.create_index(
-                    name=self.pc_index_name,
-                    dimension=self.dimensions,
-                    metric="cosine",
-                    spec=ServerlessSpec(
-                        cloud='aws',
-                        region='us-east-1'
-                    )
-                )
+        if vector_db == "chroma":
+            self.chroma_client = chromadb.PersistentClient(path="./chroma_db")
+            self.chroma_collection = self.chroma_client.get_or_create_collection(
+                name="shushinda-index",
+                metadata={"hnsw:space": "cosine"},
+            )
         elif vector_db == "bigquery":
-            self.vector_db = "bigquery"
             self.bq_client = bigquery.Client()
 
         print(f"Emb Model: {emb_model_fam}")
@@ -322,8 +335,8 @@ class EmbeddingsDB:
 
         if self.vector_db == "bq":
             data = self.search_bq(the_embeddings)
-        elif self.vector_db == "pinecone":
-            data = self.search_pinecone(the_embeddings)
+        elif self.vector_db == "chroma":
+            data = self.search_chroma(the_embeddings)
 
         return data
 
@@ -365,35 +378,22 @@ class EmbeddingsDB:
         return data
 
     @weave.op
-    def search_pinecone(self, the_embeddings):
-        """Searches Pinecone for the closest matching documents.
+    def search_chroma(self, the_embeddings):
+        """Searches ChromaDB for the closest matching documents.
 
         Args:
             the_embeddings (list): The embeddings of the query.
 
         Returns:
-            str: Concatenated results from the search.
+            str: Concatenated chunk texts from the top 3 results.
         """
-        # Reference: https://docs.pinecone.io/guides/get-started/quickstart#8-run-a-similarity-search
-        index = self.pc.Index(self.pc_index_name)
-
-        results = index.query(
-            namespace=self.namespace,
-            vector=the_embeddings,
-            top_k=3,
-            include_values=True,
-            include_metadata=True
+        results = self.chroma_collection.query(
+            query_embeddings=[the_embeddings],
+            n_results=3,
+            include=["metadatas"],
         )
-        
-        # Initialize a list to store the text of top 3 vectors
-        top_texts = []
-
-        # Extract the 'text' from metadata of the top 3 matches
-        for match in results['matches']:
-            if 'metadata' in match and 'chunk_text' in match['metadata']:
-                top_texts.append(match['metadata']['chunk_text'])
-
-        return ''.join(top_texts)
+        top_texts = [m["chunk_text"] for m in results["metadatas"][0] if "chunk_text" in m]
+        return "".join(top_texts)
 
     def insert_recs(self, rows_to_insert):
         """Insert records into the vector database based on the current configuration.
@@ -401,40 +401,26 @@ class EmbeddingsDB:
         Args:
             rows_to_insert (list[dict]): The records to insert.
         """
-        if self.vector_db == "pinecone":
-            self.insert_pinecone(rows_to_insert)
+        if self.vector_db == "chroma":
+            self.insert_chroma(rows_to_insert)
         elif self.vector_db == "bigquery":
             self.insert_bq(rows_to_insert)
 
-    def insert_pinecone(self, rows_to_insert):
-        """Insert records into the Pinecone vector database.
+    def insert_chroma(self, rows_to_insert):
+        """Insert records into the ChromaDB collection.
 
         Args:
             rows_to_insert (list[dict]): The records to insert.
         """
-        index = self.pc.Index(self.pc_index_name)
-
-        pc_rows = [
-            {"id": str(r["id"]),
-             "values": r["chunk_vector"],
-             "metadata": {
-                 "doc_name": r["doc_name"],
-                 "chunk_text": r["chunk_text"],
-                 "chunk_id": r["chunk_id"]
-             }
-             } for r in rows_to_insert
-        ]
-
-        # This breaks up the insert into 20-row chunks
-        list_of_rows = np.array_split(pc_rows, 20)
-
-        for l in list_of_rows:
-            pc_response = index.upsert(
-                vectors=l,
-                namespace=self.namespace
-            )
-
-        print(f" {pc_response} ")
+        self.chroma_collection.upsert(
+            ids=[str(r["id"]) for r in rows_to_insert],
+            embeddings=[r["chunk_vector"] for r in rows_to_insert],
+            metadatas=[
+                {"doc_name": r["doc_name"], "chunk_text": r["chunk_text"], "chunk_id": str(r["chunk_id"])}
+                for r in rows_to_insert
+            ],
+        )
+        print(f" Upserted {len(rows_to_insert)} records to ChromaDB ")
 
     def insert_bq(self, rows_to_insert):
         """Inserts rows into the given BigQuery table.
@@ -462,40 +448,11 @@ class EmbeddingsDB:
         return errors
 
     def get_doc_names(self):
-        """Retrieve unique document names from the Pinecone index.
-
-        This function fetches document names stored in the Pinecone vector index.
-        It first lists all vector IDs, then retrieves the metadata for each vector 
-        to extract document names. The document names are stored in a set to ensure 
-        uniqueness and then sorted before returning.
+        """Retrieve unique document names from the ChromaDB collection.
 
         Returns:
             list: A sorted list of unique document names.
         """
-        # Initialize the index
-        index = self.pc.Index(self.pc_index_name)
-
-        # List all IDs in the namespace
-        the_ids = []
-        for ids in index.list(namespace=self.namespace):
-            the_ids.extend(ids)
-
-        # Split the list of IDs into chunks of 1000 to manage API limitations
-        list_of_ids = np.array_split(the_ids, 1000)
-
-        # Initialize a set to collect unique doc_name values
-        unique_doc_names = set()
-
-        for chunk_ids in list_of_ids:
-            # Fetch data for the current chunk
-            response = index.fetch(ids=chunk_ids.tolist(), namespace=self.namespace)
-
-            # Iterate over the fetched items and extract doc_name values
-            for item_id, item_data in response['vectors'].items():
-                # Check if the item contains metadata and a 'doc_name' field
-                if 'metadata' in item_data and 'doc_name' in item_data['metadata']:
-                    # Add the doc_name to the set for uniqueness
-                    unique_doc_names.add(item_data['metadata']['doc_name'])
-
-        # Convert the set to a sorted list for consistency
+        result = self.chroma_collection.get(include=["metadatas"])
+        unique_doc_names = {m["doc_name"] for m in result["metadatas"] if "doc_name" in m}
         return sorted(unique_doc_names)

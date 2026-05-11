@@ -1,7 +1,10 @@
+import base64
 import datetime
+import io
 import random
 from flask import Flask, jsonify, render_template, request, session
 import os
+from PIL import Image as PILImage
 from utils import *
 
 app = Flask(__name__)
@@ -10,7 +13,7 @@ app.secret_key = 'So long and thanks for all the fish!'
 WEAVE_PROJECT = "shushindas-game"
 weave_client = weave.init(WEAVE_PROJECT)
 
-VECTOR_DB = "pinecone"  # Uncomment to use BigQuery: VECTOR_DB = "bq"
+VECTOR_DB = "chroma"  # Switch to "bigquery" to use BigQuery instead
 LLM = "openai"  # Set language model to OpenAI
 
 history = []
@@ -68,18 +71,26 @@ def ask():
     print(f"question: {question}")
     model = data.get("model")
     sample_question_num = data.get("q_num")
+    image_data = data.get("image_data")  # base64 data URL: "data:image/png;base64,..."
 
+    pil_image = None
+    if image_data:
+        try:
+            _, b64 = image_data.split(',', 1)
+            pil_image = PILImage.open(io.BytesIO(base64.b64decode(b64)))
+        except Exception as e:
+            print(f"Error decoding pasted image: {e}")
 
     llm = LanguageModel(llm_name=model, name=model)
     history = session.get('history', [])
 
     if question is not None:
-        with weave.attributes({'sample_question_num': sample_question_num, "env": "prod"}):
-            response = llm.predict(question=question)
+        with weave.attributes({'sample_question_num': sample_question_num, "env": "prod", "has_image": pil_image is not None}):
+            response = llm.predict(question=question, image=pil_image)
             answer = response["response"]
             call_id = response["call_id"]
         if answer is not None:
-            history.extend(add_to_history(question, answer, call_id))
+            history.extend(add_to_history(question, answer, call_id, has_image=pil_image is not None))
             answer = random.choice(GREETINGS)
     session['history'] = history
     sample_questions = get_sample_questions()
@@ -165,13 +176,14 @@ def get_history():
     })
     return chat_history
 
-def add_to_history(question, response, call_id):
+def add_to_history(question, response, call_id, has_image=False):
     """Adds a question and response pair to the chat history.
 
     Args:
         question (str): The user's question.
         response (str): The model's response.
         call_id (str): The call ID for tracking.
+        has_image (bool): Whether the question included a pasted image.
 
     Returns:
         list: A list of new history items to be appended.
@@ -181,6 +193,7 @@ def add_to_history(question, response, call_id):
         "is_her": False,
         "is_me": True,
         "text": question,
+        "has_image": has_image,
         "timestamp": datetime.datetime.now()
     })
     items.append({
@@ -194,8 +207,6 @@ def add_to_history(question, response, call_id):
 
 if __name__ == '__main__':
     # Environment variable checks
-    if os.getenv("PINECONE_KEY") is None:
-        print("PINECONE_KEY not set!")
     if os.getenv("PROJECT") is None:
         print("PROJECT not set!")
     if os.getenv("REGION") is None:

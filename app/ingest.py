@@ -65,26 +65,44 @@ def ingest(filename=None, text=None, title=None):
 
     print("   Finished ingesting document!")
 
-def main(args):
-    """Main function to parse arguments and start the ingestion process.
+SUPPORTED_EXTENSIONS = {".pdf", ".txt", ".html", ".htm"}
+
+def ingest_all(directory):
+    """Ingest all supported documents found in a directory.
 
     Args:
-        args (Namespace): Command-line arguments parsed by argparse.
-
-    Returns:
-        None
+        directory (str): Path to the directory to scan.
     """
-    print(f'The filename: {args.file}!')
-    ingest(args.file, args.text, args.title)
+    import pathlib
+    paths = sorted(
+        p for p in pathlib.Path(directory).iterdir()
+        if p.is_file() and p.suffix.lower() in SUPPORTED_EXTENSIONS
+    )
+    if not paths:
+        print(f"No supported files found in '{directory}'.")
+        return
+    for path in paths:
+        ingest(filename=str(path))
+
+
+def main(args):
+    if args.all:
+        ingest_all(args.all)
+    else:
+        ingest(args.file, args.text, args.title)
+
 
 # Command-line entry point
-# Example: python ingest.py --file=../docs/some_words_about_dragons.txt
+# Examples:
+#   python ingest.py -f ../docs/some_words_about_dragons.txt
+#   python ingest.py --all ../docs
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Ingest some docs')
-    parser.add_argument('-f', '--file', help='The filename and path of the file to ingest')
-    parser.add_argument('-t', '--text', help='The actual text of the file to ingest. Optional')
-    parser.add_argument('-ti', '--title', help='The title of the document. If not set, the doc name will be the filename or a UUID. Optional')
+    parser.add_argument('-f', '--file', help='Path to a single file to ingest')
+    parser.add_argument('-t', '--text', help='Raw text to ingest')
+    parser.add_argument('-ti', '--title', help='Document title (defaults to filename or UUID)')
+    parser.add_argument('--all', metavar='DIR', help='Ingest all supported files in a directory')
     args = parser.parse_args()
 
     main(args)

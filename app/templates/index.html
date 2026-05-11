@@ -93,11 +93,18 @@
                 <div class="form-floating" id="questionForm">
                     <input type="text" class="form-control" id="questionInput" name="questionInput"
                         placeholder="Ask Shushinda">
-                    <label for="questionInput">Ask Shushinda</label>
+                    <label for="questionInput">Ask Shushinda (you can paste an image!)</label>
                 </div>
                 <button class="btn btn-outline-secondary" id="buttonAsk" for="questionInput">
                     Ask
                 </button>
+            </div>
+
+            <div id="imagePreview" style="display: none; margin-top: 8px; position: relative;">
+                <img id="previewImg" src="" alt="Pasted image" style="max-height: 80px; border-radius: 4px; border: 1px solid #6c757d;">
+                <button type="button" id="clearImageBtn"
+                    style="position: absolute; top: -6px; left: 74px; background: #dc3545; color: white; border: none; border-radius: 50%; width: 20px; height: 20px; cursor: pointer; font-size: 13px; line-height: 20px; padding: 0; text-align: center;"
+                    title="Remove image">&times;</button>
             </div>
 
         </form>
