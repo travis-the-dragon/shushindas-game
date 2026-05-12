@@ -60,3 +60,11 @@
 #questionSpinner {
     display:none;
 }
+
+.tool-step {
+    font-size: 0.8rem;
+    color: #aaa;
+    font-style: italic;
+    padding: 2px 12px;
+    margin: 2px 0;
+}

@@ -6,8 +6,8 @@ google-cloud-aiplatform
 PyPDF2
 setuptools
 wheel
-spacy
 openai
 chromadb
 weave
+litellm
 Pillow

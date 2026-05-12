@@ -62,11 +62,24 @@ function renderHistory(history) {
         const div = document.createElement('div');
         div.classList.add('d-flex', 'mb-2');
 
-        if (item.is_her) {
+        if (item.is_tool_step) {
+            let label;
+            if (item.tool === 'list_books') {
+                label = '📚 Consulting the card catalog...';
+            } else if (item.tool === 'get_random_fact') {
+                label = '🎲 Rummaging through the shelves for something interesting...';
+            } else if (item.tool === 'check_overdue_books') {
+                label = '📋 Checking the overdue ledger...';
+            } else {
+                label = `🔍 Searching the stacks for "${item.args.query}"...`;
+            }
+            div.classList.add('justify-content-center');
+            div.innerHTML = `<div class="tool-step">${label}</div>`;
+        } else if (item.is_her) {
             div.classList.add('justify-content-end');
             div.innerHTML = `
                 <div class="msg-bubble msg-received position-relative" data-call-id="${item.call_id}">
-                    ${item.text}
+                    ${marked.parse(item.text)}
                     <div class="feedback-icons position-absolute" style="bottom: 5px; right: 5px;">
                         <button class="btn btn-sm p-0" id="thumbsUpBtn-${index}">
                             👍
@@ -165,108 +178,109 @@ document.addEventListener('DOMContentLoaded', function () {
     });
 
 
+    const questionInput = document.getElementById('questionInput');
+    const askButton = document.getElementById('buttonAsk');
+
+    function setInputBusy(busy) {
+        questionInput.disabled = busy;
+        questionInput.style.opacity = busy ? '0.45' : '';
+        askButton.disabled = busy;
+    }
+
+    function submitButton(buttonElement) {
+        const spanElement = buttonElement.querySelector('span');
+        let originalText = '';
+        if (spanElement) {
+            originalText = spanElement.textContent;
+            spanElement.textContent = '';
+        } else {
+            originalText = buttonElement.textContent;
+            buttonElement.textContent = '';
+        }
+
+        const spinner = document.createElement('div');
+        spinner.classList.add('spinner');
+        spinner.style.width = '24px';
+        spinner.style.height = '24px';
+        spinner.style.backgroundImage = 'url("/static/images/wizard-hat.png")';
+        spinner.style.backgroundSize = 'cover';
+        spinner.style.animation = 'spin 2s linear infinite';
+        if (spanElement) {
+            spanElement.appendChild(spinner);
+        } else {
+            buttonElement.appendChild(spinner);
+        }
+
+        let question = '';
+        let qNum = 0;
+        if (buttonElement.id === "buttonAsk") {
+            question = questionInput.value;
+            qNum = 0;
+        } else if (buttonElement.id === "quickQ1Button") {
+            question = document.getElementById('quickQ1Input').value;
+            qNum = 1;
+        } else if (buttonElement.id === "quickQ2Button") {
+            question = document.getElementById('quickQ2Input').value;
+            qNum = 2;
+        } else if (buttonElement.id === "quickQ3Button") {
+            question = document.getElementById('quickQ3Input').value;
+            qNum = 3;
+        } else if (buttonElement.id === "quickQ4Button") {
+            question = document.getElementById('quickQ4Input').value;
+            qNum = 4;
+        }
+
+        if (!question.trim()) {
+            if (spanElement) spanElement.textContent = originalText;
+            else buttonElement.textContent = originalText;
+            return;
+        }
+
+        const model = getSelectedModel();
+        const imageDataToSend = pastedImageData;
+        if (imageDataToSend) clearImagePreview();
+
+        // Clear and lock the text input immediately so it's obvious the submit landed
+        if (buttonElement.id === 'buttonAsk') {
+            questionInput.value = '';
+        }
+        setInputBusy(true);
+
+        fetch('/ask', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ question: question, model: model, q_num: qNum, image_data: imageDataToSend })
+        })
+            .then(response => response.json())
+            .then(data => {
+                if (spanElement) spanElement.textContent = originalText;
+                else buttonElement.textContent = originalText;
+                setInputBusy(false);
+                renderHistory(data.history);
+                updateQuickQuestions(data.sample_questions);
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                if (spanElement) spanElement.textContent = originalText;
+                else buttonElement.textContent = originalText;
+                setInputBusy(false);
+            });
+    }
+
+    // Submit on Enter key in the text input
+    questionInput.addEventListener('keydown', function (event) {
+        if (event.key === 'Enter') {
+            event.preventDefault();
+            submitButton(askButton);
+        }
+    });
+
     // Handling clicks for all quick question buttons
     const buttons = document.querySelectorAll('button[id^="quickQ"], #buttonAsk');
-
     buttons.forEach(button => {
         button.addEventListener('click', function (event) {
-            event.preventDefault(); // Prevent the default form submission
-
-            const buttonElement = this; // Save reference to the button element
-            let originalText = '';
-
-            // Check if there's a <span> element to store the original text
-            const spanElement = buttonElement.querySelector('span');
-            if (spanElement) {
-                originalText = spanElement.textContent;
-                spanElement.textContent = '';
-            } else {
-                originalText = buttonElement.textContent;
-                buttonElement.textContent = ''; // Clear the button text
-            }
-
-            // Create the spinner element
-            const spinner = document.createElement('div');
-            spinner.classList.add('spinner');
-            spinner.style.width = '24px';
-            spinner.style.height = '24px';
-            spinner.style.backgroundImage = 'url("/static/images/wizard-hat.png")';
-            spinner.style.backgroundSize = 'cover';
-            spinner.style.animation = 'spin 2s linear infinite';
-
-            // Add the spinner to the button
-            if (spanElement) {
-                spanElement.appendChild(spinner);
-            } else {
-                buttonElement.appendChild(spinner);
-            }
-
-            let question = '';
-            let qNum = 0;
-
-            // Determine the question and question number based on the button clicked
-            if (buttonElement.id === "buttonAsk") {
-                question = document.getElementById('questionInput').value;
-                qNum = 0;
-            }
-            else if (buttonElement.id === "quickQ1Button") {
-                question = document.getElementById('quickQ1Input').value;
-                qNum = 1;
-            }
-            else if (buttonElement.id === "quickQ2Button") {
-                question = document.getElementById('quickQ2Input').value;
-                qNum = 2;
-            }
-            else if (buttonElement.id === "quickQ3Button") {
-                question = document.getElementById('quickQ3Input').value;
-                qNum = 3;
-            }
-            else if (buttonElement.id === "quickQ4Button") {
-                question = document.getElementById('quickQ4Input').value;
-                qNum = 4;
-            }
-
-            // Get the selected model
-            const model = getSelectedModel();
-            console.log("model: ", model);
-
-            // Capture and clear the pasted image before sending
-            const imageDataToSend = pastedImageData;
-            if (imageDataToSend) {
-                clearImagePreview();
-            }
-
-            // Send the data using fetch
-            fetch('/ask', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({ question: question, model: model, q_num: qNum, image_data: imageDataToSend })
-            })
-                .then(response => response.json())
-                .then(data => {
-                    // Restore the original text and remove the spinner
-                    if (spanElement) {
-                        spanElement.textContent = originalText;
-                    } else {
-                        buttonElement.textContent = originalText;
-                    }
-
-                    // Render the history and update quick questions
-                    renderHistory(data.history);
-                    updateQuickQuestions(data.sample_questions);
-                })
-                .catch(error => {
-                    console.error('Error:', error);
-
-                    // Restore the original text in case of error
-                    if (spanElement) {
-                        spanElement.textContent = originalText;
-                    } else {
-                        buttonElement.textContent = originalText;
-                    }
-                });
+            event.preventDefault();
+            submitButton(this);
         });
     });
     

@@ -9,43 +9,37 @@
 
 <!-- <div class="my-3"></div> -->
 
-<div class="row">
-    <div class="col-sm"></div>
-    <div class="col-sm"></div>
-    <div class="col-sm">
+<div class="container">
+    <div class="d-flex justify-content-end mb-2">
         <div class="dropdown" id="modelDropdown">
-            <button class="btn btn-outline-secondary btn-sm dropdown-toggle" 
-                type="button" data-bs-toggle="dropdown" >
+            <button class="btn btn-outline-secondary btn-sm dropdown-toggle"
+                type="button" data-bs-toggle="dropdown">
             {{ model.llms[0] | safe }}
             </button>
-            <div class="dropdown-menu">
+            <div class="dropdown-menu dropdown-menu-end">
                 {% for item in model.llms %}
                 <a class="dropdown-item" href="#" value="{{item|safe}}">{{item | safe }}</a>
                 {% endfor %}
             </div>
-          </div>
+        </div>
     </div>
-</div>
 
-<div class="row">
     <h1 class="text-center display-1">Shushinda's Desk</h1>
-</div>
 
-<!--######## Image and Desk -->
-<div class="row">
-    <div class="col"></div>
-    <div class="col-8 container">
-        <div id="img_container">
-            <img src="{{url_for('static', filename='shushinda_at_desk_0.png')}}" style="height: 600px;" class="rounded img-fluid">
-            <div class="my-2"></div>
-            <div id="responses" class="alert alert-light" role="alert">
-                {{model.message}}
+    <!--######## Image and Desk -->
+    <div class="row justify-content-center">
+        <div class="col-auto">
+            <div id="img_container">
+                <img src="{{url_for('static', filename='shushinda_at_desk_0.png')}}" style="height: 600px;" class="rounded img-fluid">
+                <div class="my-2"></div>
+                <div id="responses" class="alert alert-light" role="alert">
+                    {{model.message}}
+                </div>
             </div>
         </div>
     </div>
-    <div class="col"></div>
+    <!--######## Image and Desk -->
 </div>
-<!--######## Image and Desk -->
 <div class="my-4"></div>
 
 <!--######## Sample Questions -->

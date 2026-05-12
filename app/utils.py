@@ -1,7 +1,9 @@
 import base64
 import io
+import json
 import os
 import random
+import threading
 import yaml
 import numpy as np
 import PyPDF2
@@ -18,7 +20,7 @@ from openai import OpenAI
 import chromadb
 from pydantic import BaseModel, Field
 from typing import Union
-import spacy
+import re
 import weave
 
 # Helper function that reads from the config file.
@@ -74,7 +76,6 @@ LLMS = [
     {"model": "gpt-4o-mini", "family": "openai"},
     {"model": "gpt-4o", "family": "openai"},
     {"model": "gpt-4-turbo", "family": "openai"},
-    {"model": "gemini-1.5-flash-001", "family": "gemini"}
 ]
 
 class SystemPrompt(weave.Object):
@@ -229,7 +230,6 @@ class EmbeddingsDB:
         self.model_fam = emb_model_fam
         self.dimensions = 768
         self.vector_db = vector_db
-        self.nlp = spacy.load("en_core_web_md")
 
         if emb_model_fam == "gecko":
             self.emb_model_name = "text-embedding-004"
@@ -294,10 +294,8 @@ class EmbeddingsDB:
         Returns:
             list[str]: An array of chunks.
         """
-        # SpaCy for sentence segmentation
-        doc = self.nlp("".join(text))
-        chunks = [chunk.text for chunk in doc.sents]
-        return chunks
+        sentences = re.split(r'(?<=[.!?])\s+', "".join(text))
+        return [s.strip() for s in sentences if s.strip()]
 
     def get_embeddings(self, chunk):
         """Returns an array of embedding vectors using the selected embedding model.
@@ -456,3 +454,210 @@ class EmbeddingsDB:
         result = self.chroma_collection.get(include=["metadatas"])
         unique_doc_names = {m["doc_name"] for m in result["metadatas"] if "doc_name" in m}
         return sorted(unique_doc_names)
+
+
+# ---------------------------------------------------------------------------
+# Shared ChromaDB instance — PersistentClient crashes if opened concurrently
+# from multiple threads, so we reuse a single EmbeddingsDB across the process.
+# ---------------------------------------------------------------------------
+
+_db_lock = threading.Lock()
+_shared_db: "EmbeddingsDB | None" = None
+
+
+def _get_db() -> "EmbeddingsDB":
+    global _shared_db
+    if _shared_db is None:
+        with _db_lock:
+            if _shared_db is None:
+                _shared_db = EmbeddingsDB()
+    return _shared_db
+
+
+# ---------------------------------------------------------------------------
+# Agent tools — standalone @weave.op functions so each call gets its own trace
+# ---------------------------------------------------------------------------
+
+OVERDUE_BOOKS = [
+    ("Wand Maintenance for the Perpetually Clumsy", "Barnaby Fizzwick", 47),
+    ("A Practical Guide to Ignoring Rules", "Mirabel Thorne", 312),
+    ("Taming Grumpy Enchantments", "Professor Cedric Snoot", 8),
+    ("1001 Things to Do With a Cauldron (Besides Soup)", "Heloise Dusk", 93),
+    ("The Whispering Catalogue of Forbidden Snacks", "Anonymous", 201),
+    ("Dragon Etiquette for the Socially Anxious", "Griselda Puff", 17),
+    ("Advanced Napping in Restricted Sections", "Slumberwick H. Moss", 556),
+    ("Why Your Familiar Is Judging You", "Ophelia Brank", 29),
+]
+
+AGENT_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "search_library",
+            "description": "Search the library stacks for information relevant to a topic. Returns matching text from ingested documents.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "The topic or question to search for"}
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_books",
+            "description": "List all documents and tomes available in the library. Call this first to understand what sources exist before searching.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_random_fact",
+            "description": "Retrieve a random interesting fact or passage from the library's collection. Useful when the patron wants to be surprised or entertained.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "check_overdue_books",
+            "description": "Check the overdue books ledger to see which tomes have been borrowed and not returned. Returns a notice about currently overdue items.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+]
+
+
+@weave.op
+def search_library(query: str) -> str:
+    """Search ChromaDB for chunks relevant to the query."""
+    return _get_db().search_vector_database(query)
+
+
+@weave.op
+def list_books() -> str:
+    """Return a comma-separated list of all ingested document names."""
+    books = _get_db().get_doc_names()
+    return ", ".join(books) if books else "No books have been ingested yet."
+
+
+@weave.op
+def get_random_fact() -> str:
+    """Return a random substantive passage from the library's collection."""
+    db = _get_db()
+    result = db.chroma_collection.get(include=["metadatas"])
+    metadatas = result.get("metadatas", [])
+    if not metadatas:
+        return "The library shelves are bare — nothing has been ingested yet."
+    # Exclude TOC/index chunks: too short or heavy with dot leaders
+    candidates = [
+        m for m in metadatas
+        if len(m.get("chunk_text", "")) >= 200 and "....." not in m.get("chunk_text", "")
+    ]
+    if not candidates:
+        candidates = metadatas
+    chosen = random.choice(candidates)
+    return f"From '{chosen.get('doc_name', 'unknown tome')}': {chosen.get('chunk_text', '')}"
+
+
+@weave.op
+def check_overdue_books() -> str:
+    """Return a notice about overdue books from the ledger."""
+    count = random.randint(1, 3)
+    selection = random.sample(OVERDUE_BOOKS, min(count, len(OVERDUE_BOOKS)))
+    lines = ["Overdue notices from Shushinda's ledger:"]
+    for title, borrower, days in selection:
+        lines.append(f"  • \"{title}\" by {borrower} — {days} days overdue")
+    lines.append("Fines are payable in enchanted tokens or particularly good biscuits.")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# ShushindaAgent — replaces LanguageModel for the /ask endpoint
+# ---------------------------------------------------------------------------
+
+class ShushindaAgent(weave.Model):
+    """Agent that uses OpenAI function calling to search the library before answering."""
+
+    name: str = Field(default="ShushindaAgent")
+    llm_model_name: str = Field(default="gpt-4o-mini")
+    llm_fam: str = Field(default="openai")
+    system_prompt: str = Field(default=SHUSHINDA)
+    temperature: float = Field(default=0.7)
+
+    def __init__(self, llm_model_name: str = "gpt-4o-mini", **kwargs):
+        llm_config = next(
+            (l for l in LLMS if l["model"] == llm_model_name),
+            {"model": llm_model_name, "family": "openai"},
+        )
+        super().__init__(
+            name=llm_model_name,
+            llm_model_name=llm_model_name,
+            llm_fam=llm_config["family"],
+            **kwargs,
+        )
+
+    @weave.op
+    def predict(self, question: str, image: PILImage.Image = None):
+        current_call = weave.get_current_call()
+
+        client = OpenAI()
+
+        if image is not None:
+            buf = io.BytesIO()
+            fmt = image.format or "PNG"
+            image.save(buf, format=fmt)
+            b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+            mime = f"image/{fmt.lower()}"
+            user_content = [
+                {"type": "text", "text": question},
+                {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},
+            ]
+        else:
+            user_content = question
+
+        messages = [
+            {"role": "system", "content": self.system_prompt},
+            {"role": "user", "content": user_content},
+        ]
+        tool_steps = []
+
+        while True:
+            response = client.chat.completions.create(
+                model=self.llm_model_name,
+                temperature=self.temperature,
+                messages=messages,
+                tools=AGENT_TOOLS,
+                tool_choice="auto",
+            )
+            choice = response.choices[0]
+
+            if choice.finish_reason == "tool_calls":
+                messages.append(choice.message)
+                for tc in choice.message.tool_calls:
+                    args = json.loads(tc.function.arguments)
+                    if tc.function.name == "search_library":
+                        result = search_library(args["query"])
+                    elif tc.function.name == "list_books":
+                        result = list_books()
+                    elif tc.function.name == "get_random_fact":
+                        result = get_random_fact()
+                    elif tc.function.name == "check_overdue_books":
+                        result = check_overdue_books()
+                    else:
+                        result = "Unknown tool."
+                    tool_steps.append({"tool": tc.function.name, "args": args})
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": str(result),
+                    })
+            else:
+                return {
+                    "response": choice.message.content or random.choice(COULD_NOT_ANSWER),
+                    "call_id": current_call.id,
+                    "tool_steps": tool_steps,
+                }

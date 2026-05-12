@@ -61,7 +61,6 @@ cd app
 # Create the virtual environment and install dependencies
 uv venv
 uv pip install -r requirements.txt
-python -m spacy download en_core_web_md
 ```
 
 ## Environment Variables
@@ -71,8 +70,6 @@ python -m spacy download en_core_web_md
 | `OPENAI_API_KEY` | Yes | OpenAI LLM calls and embeddings |
 | `WANDB_API_KEY` | Yes | Weave tracing and evaluation |
 | `WANDB_ENTITY` | Yes | Your W&B username or team name |
-| `PROJECT` | Gemini only | GCP project ID |
-| `REGION` | Gemini only | GCP region (e.g. `us-central1`) |
 
 Copy `.env.dev` to `.env` and fill in the values before running.
 
@@ -138,9 +135,13 @@ To run evaluations:
 ```bash
 cd app
 uv run python shushinda_judge.py -a quick    # 3 examples, fast iteration
-uv run python shushinda_judge.py -a full     # full dataset, default model
-uv run python shushinda_judge.py -a compare  # all models side-by-side
+uv run python shushinda_judge.py -a full     # full dataset, default model (gpt-4o-mini)
+uv run python shushinda_judge.py -a models   # full dataset, gpt-4o-mini / gpt-4o / gpt-4-turbo
+uv run python shushinda_judge.py -a prompts  # full dataset, standard / formal / chaotic prompt variants
+uv run python shushinda_judge.py -a temps    # full dataset, temperature 0.2 / 0.7 / 1.2
 ```
+
+Each run publishes results to Weave under a named evaluation, making it easy to compare runs side-by-side in the W&B UI.
 
 
 # Architecture

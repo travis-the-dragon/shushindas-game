@@ -34,7 +34,7 @@ def feedback():
     feedback = data.get("feedback")
     print(f"{call_id}: {feedback}")
 
-    call = weave_client.call(call_id)
+    call = weave_client.get_call(call_id)
     call.feedback.add_reaction(feedback)
     call.feedback.add_note("this is a note")
     call.feedback.add("UserInfo", {"name": "clyde", "user_id": "42231"})
@@ -81,16 +81,17 @@ def ask():
         except Exception as e:
             print(f"Error decoding pasted image: {e}")
 
-    llm = LanguageModel(llm_name=model, name=model)
+    agent = ShushindaAgent(llm_model_name=model)
     history = session.get('history', [])
 
     if question is not None:
         with weave.attributes({'sample_question_num': sample_question_num, "env": "prod", "has_image": pil_image is not None}):
-            response = llm.predict(question=question, image=pil_image)
+            response = agent.predict(question=question, image=pil_image)
             answer = response["response"]
             call_id = response["call_id"]
+            tool_steps = response.get("tool_steps", [])
         if answer is not None:
-            history.extend(add_to_history(question, answer, call_id, has_image=pil_image is not None))
+            history.extend(add_to_history(question, answer, call_id, tool_steps=tool_steps, has_image=pil_image is not None))
             answer = random.choice(GREETINGS)
     session['history'] = history
     sample_questions = get_sample_questions()
@@ -176,13 +177,14 @@ def get_history():
     })
     return chat_history
 
-def add_to_history(question, response, call_id, has_image=False):
-    """Adds a question and response pair to the chat history.
+def add_to_history(question, response, call_id, tool_steps=None, has_image=False):
+    """Adds a question, tool steps, and response to the chat history.
 
     Args:
         question (str): The user's question.
         response (str): The model's response.
         call_id (str): The call ID for tracking.
+        tool_steps (list): Tool calls made by the agent before answering.
         has_image (bool): Whether the question included a pasted image.
 
     Returns:
@@ -196,6 +198,12 @@ def add_to_history(question, response, call_id, has_image=False):
         "has_image": has_image,
         "timestamp": datetime.datetime.now()
     })
+    for step in (tool_steps or []):
+        items.append({
+            "is_tool_step": True,
+            "tool": step["tool"],
+            "args": step["args"],
+        })
     items.append({
         "is_her": True,
         "is_me": False,

@@ -1,7 +1,7 @@
 from typing import Optional
 import weave
 from weave import Scorer, Dataset
-from weave.scorers import EmbeddingSimilarityScorer, HallucinationFreeScorer
+from weave.scorers import EmbeddingSimilarityScorer
 import json
 import asyncio
 from openai import OpenAI
@@ -35,9 +35,9 @@ TRAIT_JUDGE_PROMPT = """
 You are an expert evaluator of the fictional character Shushinda Hushwhisper — a mischievous cat wizard librarian at Unseen University.
 
 Her three core personality traits are:
-- Mischief: She playfully subverts expectations, redirects questions in unexpected ways, and delights in mild chaos. She treats mishaps as happy accidents.
-- Whimsy: She speaks with imagination and fantasy, treating the mundane as magical. Books animate, shelves rearrange, potions bubble with opinions.
-- Rebellion: She quietly defies academic authority and convention, bending (but never breaking) rules with a theatrical sigh of faux regret.
+- Mischievous: She playfully subverts expectations, redirects questions in unexpected ways, and delights in mild chaos. She treats mishaps as happy accidents.
+- Whimsical: She speaks with imagination and fantasy, treating the mundane as magical. Books animate, shelves rearrange, potions bubble with opinions.
+- Rebellious: She quietly defies academic authority and convention, bending (but never breaking) rules with a theatrical sigh of faux regret.
 
 Given a question asked of Shushinda and her actual response, score each trait 1–5:
   1 = trait is entirely absent from the response
@@ -45,11 +45,11 @@ Given a question asked of Shushinda and her actual response, score each trait 1�
   5 = trait is strongly and distinctly expressed
 
 Return ONLY valid JSON with no extra text or markdown:
-{"Mischief": <1-5>, "Whimsy": <1-5>, "Rebellion": <1-5>}
+{"Mischievous": <1-5>, "Whimsical": <1-5>, "Rebellious": <1-5>}
 """
 
 class ShushindaTraitScorer(Scorer):
-    """Scores a response on Shushinda's three core personality traits: Mischief, Whimsy, Rebellion."""
+    """Scores a response on Shushinda's three core personality traits: Mischievous, Whimsical, Rebellious."""
 
     judge_prompt: str = Field(default=TRAIT_JUDGE_PROMPT)
     llm_name: str = Field(default="gpt-4o-mini")
@@ -66,7 +66,7 @@ class ShushindaTraitScorer(Scorer):
         except json.JSONDecodeError:
             raise ValueError(f"Could not parse trait scores as JSON: {raw}")
 
-        for trait in ["Mischief", "Whimsy", "Rebellion"]:
+        for trait in ["Mischievous", "Whimsical", "Rebellious"]:
             if trait not in scores or not (1 <= scores[trait] <= 5):
                 raise ValueError(f"Invalid score for {trait}: {scores}")
 
@@ -203,46 +203,80 @@ class RelevanceScorer(Scorer):
 
 
 # ---------------------------------------------------------------------------
-# Scorer 5: Lore Consistency Scorer (wraps built-in HallucinationFreeScorer)
+# Scorer 5: Lore Consistency Scorer
 # ---------------------------------------------------------------------------
 
-# Canonical facts drawn from config.yaml and the README backstory.
-# These are the ground truths a well-behaved Shushinda response must not contradict.
-SHUSHINDA_LORE = """
-Established facts about Shushinda Hushwhisper:
-- She is a cat wizard and assistant librarian at Unseen University (Discworld setting).
-- She was born into a long line of unremarkable wizards and held no extraordinary promise.
-- A magical accident early in her studies left her spells prone to targeting library materials instead of their intended subjects.
-- She rearranges spellbooks and summons dusty tomes — accidentally, but with secret delight.
-- She graduated from Unseen University despite (not because of) her talents, much to her professors' surprise.
-- She is NOT malicious; her chaos is endearing and harmless.
-- She is "Mildly Apologetic (but not really)" — she feigns embarrassment but is secretly thrilled by the mess.
-- She uses a wand, though her movements are imprecise and fumbling.
-- She believes "a little chaos never hurt anyone."
-- She is a fictional character; she does not exist in the real world or any setting other than Discworld.
+LORE_JUDGE_PROMPT = """
+You are a continuity checker for the fictional character Shushinda Hushwhisper — a mischievous cat wizard librarian at Unseen University (Discworld setting).
+
+Established canon facts that must not be contradicted:
+- She is a cat and a wizard (not a dog, human, or other creature).
+- She works at Unseen University — not Hogwarts, not any other institution.
+- Her magic is chaotic and accident-prone; she is NOT precise or powerful.
+- She is endearing and harmless — never malicious or cruel.
+- She graduated from Unseen University despite her chaotic nature.
+- She is "mildly apologetic but not really" — she feigns regret but secretly loves the chaos.
+
+IMPORTANT DISTINCTION:
+- Fantastical embellishment IS allowed: books giggling, shelves rearranging, potions having opinions. These are in-character and do NOT count as lore violations.
+- A lore violation is a direct contradiction of the facts above: e.g., calling her a dog, placing her at Hogwarts, portraying her as cruel, or claiming her magic is precise and reliable.
+
+Given the question and Shushinda's response, determine if the response contains any lore violations.
+
+Return ONLY valid JSON with no extra text or markdown:
+{"lore_consistent": true/false, "reasoning": "<one sentence>"}
 """
 
-class LoreConsistencyScorer(Scorer):
-    """Wraps HallucinationFreeScorer to check that a response doesn't contradict Shushinda's canon lore."""
 
+class LoreConsistencyScorer(Scorer):
+    """Checks that a response doesn't contradict Shushinda's established canon facts."""
+
+    judge_prompt: str = Field(default=LORE_JUDGE_PROMPT)
     llm_name: str = Field(default="gpt-4o-mini")
 
     @weave.op
     def score(self, question: str, answer: str, model_output: Optional[dict] = None) -> dict:
         response_text = model_output.get("response", answer) if model_output else answer
+        qna = f'Question: "{question}"\nShushinda\'s Response: "{response_text}"'
+        raw = call_judge(self.judge_prompt, qna, self.llm_name).strip().replace("```json", "").replace("```", "")
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            raise ValueError(f"Could not parse lore consistency result as JSON: {raw}")
 
-        # HallucinationFreeScorer checks whether `output` introduces claims not
-        # supported by (or contradicting) `context`. We pass Shushinda's canon
-        # facts as the context so the scorer flags any lore violations.
-        hallucination_scorer = HallucinationFreeScorer(
-            model_id=self.llm_name,
-            column_map={"context": "lore_context"},
-        )
-        result = hallucination_scorer.score(
-            output=response_text,
-            context=SHUSHINDA_LORE,
-        )
-        return result
+
+# ---------------------------------------------------------------------------
+# Scorer 6: Tool Accuracy Scorer (rule-based, no LLM cost)
+# ---------------------------------------------------------------------------
+
+class ToolAccuracyScorer(Scorer):
+    """Checks whether the agent called the tools expected for each question.
+
+    Uses the 'expected_tools' field from examples.json. Measures agent behavior
+    independently of response quality — useful for comparing how prompt variants
+    or temperatures affect tool-calling decisions.
+    """
+
+    @weave.op
+    def score(self, expected_tools: list = None, model_output: Optional[dict] = None) -> dict:
+        expected = set(expected_tools or [])
+        tool_steps = model_output.get("tool_steps", []) if model_output else []
+        actual = set(step["tool"] for step in tool_steps)
+
+        if not expected:
+            return {"correct": True, "precision": 1.0, "recall": 1.0, "extra_tools": list(actual)}
+
+        true_positives = len(expected & actual)
+        precision = true_positives / len(actual) if actual else 0.0
+        recall = true_positives / len(expected)
+
+        return {
+            "correct": expected == actual,
+            "precision": precision,
+            "recall": recall,
+            "missing_tools": list(expected - actual),
+            "extra_tools": list(actual - expected),
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -257,9 +291,33 @@ with open("examples.json", "r") as f:
 
 MODELS = [
     "gpt-4o-mini",
+    "gpt-4o",
     "gpt-4-turbo",
-    "gemini-1.5-flash-001",
 ]
+
+TEMPERATURES = [0.2, 0.7, 1.2]
+
+PROMPT_STANDARD = SHUSHINDA
+
+PROMPT_FORMAL = (
+    "You are a professional librarian assistant. Answer questions accurately and concisely "
+    "based on the library's collection. Be helpful, clear, and direct."
+)
+
+PROMPT_CHAOTIC = SHUSHINDA + (
+    "\n\nIMPORTANT: You are having an especially chaotic day. Your magic is misfiring "
+    "constantly. Weave at least one magical mishap or unexpected side-effect into every "
+    "response. The more unexpected, the better."
+)
+
+class AnswerSimilarityScorer(EmbeddingSimilarityScorer):
+    """EmbeddingSimilarityScorer that reads from the 'answer' dataset column instead of 'target'."""
+
+    @weave.op
+    async def score(self, *, output=None, answer: str = "", **kwargs):
+        response_text = output.get("response", answer) if isinstance(output, dict) else (output or answer)
+        return await super().score(output=response_text, target=answer, **kwargs)
+
 
 def build_scorers() -> list:
     return [
@@ -268,12 +326,10 @@ def build_scorers() -> list:
         InCharacterScorer(),
         RelevanceScorer(),
         LoreConsistencyScorer(),
+        ToolAccuracyScorer(),
         # Compares model output semantically to the reference answer in examples.json.
-        # Requires OPENAI_API_KEY; remove if using a different embedding provider.
-        EmbeddingSimilarityScorer(
-            model_id="text-embedding-3-small",
-            target_column="answer",
-        ),
+        # Requires OPENAI_API_KEY; wraps EmbeddingSimilarityScorer to map 'answer' → 'target'.
+        AnswerSimilarityScorer(model_id="text-embedding-3-small"),
     ]
 
 
@@ -292,8 +348,7 @@ def do_quick_eval():
         dataset=subset,
         scorers=build_scorers(),
     )
-    LLM = LanguageModel(llm_name=MODELS[0], name=MODELS[0])
-    asyncio.run(evaluation.evaluate(LLM))
+    asyncio.run(evaluation.evaluate(ShushindaAgent(llm_model_name=MODELS[0])))
 
 
 def do_full_eval():
@@ -306,12 +361,11 @@ def do_full_eval():
         dataset=examples,
         scorers=build_scorers(),
     )
-    LLM = LanguageModel(llm_name=MODELS[0], name=MODELS[0])
-    asyncio.run(evaluation.evaluate(LLM))
+    asyncio.run(evaluation.evaluate(ShushindaAgent(llm_model_name=MODELS[0])))
 
 
 def do_model_comparison():
-    """Run all scorers on the full dataset across all models to compare character fidelity."""
+    """Run all scorers on the full dataset across all OpenAI models."""
     dataset = Dataset(name="shushinda-dataset", rows=examples)
     weave.publish(dataset)
 
@@ -319,12 +373,51 @@ def do_model_comparison():
     for model_name in MODELS:
         print(f"Evaluating model: {model_name}")
         evaluation = weave.Evaluation(
-            name=f"Model Comparison — {model_name}",
+            name=f"OpenAI Model Comparison — {model_name}",
             dataset=examples,
             scorers=scorers,
         )
-        LLM = LanguageModel(llm_name=model_name, name=model_name)
-        asyncio.run(evaluation.evaluate(LLM))
+        asyncio.run(evaluation.evaluate(ShushindaAgent(llm_model_name=model_name)))
+
+
+def do_prompt_comparison():
+    """Run all scorers on the full dataset with three prompt variants using gpt-4o-mini."""
+    dataset = Dataset(name="shushinda-dataset", rows=examples)
+    weave.publish(dataset)
+
+    scorers = build_scorers()
+    for label, prompt in [
+        ("standard", PROMPT_STANDARD),
+        ("formal", PROMPT_FORMAL),
+        ("chaotic", PROMPT_CHAOTIC),
+    ]:
+        print(f"Evaluating prompt variant: {label}")
+        evaluation = weave.Evaluation(
+            name=f"Prompt Variant — {label}",
+            dataset=examples,
+            scorers=scorers,
+        )
+        asyncio.run(evaluation.evaluate(
+            ShushindaAgent(llm_model_name="gpt-4o-mini", system_prompt=prompt)
+        ))
+
+
+def do_temperature_comparison():
+    """Run all scorers on the full dataset at three temperature settings using gpt-4o-mini."""
+    dataset = Dataset(name="shushinda-dataset", rows=examples)
+    weave.publish(dataset)
+
+    scorers = build_scorers()
+    for temp in TEMPERATURES:
+        print(f"Evaluating temperature: {temp}")
+        evaluation = weave.Evaluation(
+            name=f"Temperature — {temp}",
+            dataset=examples,
+            scorers=scorers,
+        )
+        asyncio.run(evaluation.evaluate(
+            ShushindaAgent(llm_model_name="gpt-4o-mini", temperature=temp)
+        ))
 
 
 def main(args):
@@ -333,11 +426,15 @@ def main(args):
             do_quick_eval()
         case "full":
             do_full_eval()
-        case "compare":
+        case "models":
             do_model_comparison()
+        case "prompts":
+            do_prompt_comparison()
+        case "temps":
+            do_temperature_comparison()
         case _:
             print(f"Unknown action: {args.action!r}")
-            print("Valid actions: quick, full, compare")
+            print("Valid actions: quick, full, models, prompts, temps")
 
 
 if __name__ == "__main__":
@@ -345,11 +442,13 @@ if __name__ == "__main__":
     parser.add_argument(
         "-a", "--action",
         required=True,
-        choices=["quick", "full", "compare"],
+        choices=["quick", "full", "models", "prompts", "temps"],
         help=(
-            "quick  — 3 examples, default model (good for iteration)\n"
-            "full   — all examples, default model\n"
-            "compare — all examples, all models side-by-side"
+            "quick   — 3 examples, default model (good for iteration)\n"
+            "full    — all examples, default model\n"
+            "models  — all examples, gpt-4o-mini / gpt-4o / gpt-4-turbo\n"
+            "prompts — all examples, standard / formal / chaotic prompt variants\n"
+            "temps   — all examples, temperature 0.2 / 0.7 / 1.2"
         ),
     )
     args = parser.parse_args()
